@@ -9,3 +9,4 @@ PyYAML==5.4.1
 six==1.15.0
 toml==0.10.2
 virtualenv==20.4.4
+requests==2.25.1
