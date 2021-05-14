@@ -1,82 +1,62 @@
 import scrapy
-import pymongo
+from ..loaders import AutoyoulaLoader
 
-import re
 
 class AutoyoulaSpider(scrapy.Spider):
     name = "autoyoula"
     allowed_domains = ["auto.youla.ru"]
     start_urls = ["https://auto.youla.ru/"]
-
-    data_query = {
-        "url": lambda resp: resp.url,
-        "title": lambda resp: resp.css(".AdvertCard_advertTitle__1S1Ak::text").extract_first(),
-        "images": lambda resp: resp.css(
-            "figure.PhotoGallery_photo__36e_r img.PhotoGallery_photoImage__2mHGn::attr('src')").getall(),
-        "характеристики": lambda resp: [
-            {
-                "name": resp.css(".AdvertSpecs_label__2JHnS::text").extract_first(),
-                "value": resp.css(".AdvertSpecs_data__xK2Qx::text").extract_first()
-                        or resp.css(".AdvertSpecs_data__xK2Qx a::text").extract_first(),
-            }
-        ],
-        "Описание авто": lambda resp: resp.css(
-            "div.AdvertCard_description__2bVlR div.AdvertCard_descriptionWrap__17EU3 div.AdvertCard_descriptionInner__KnuRi::text").get(),
-        "автор": lambda resp: AutoyoulaSpider.authot_id(resp),
-
+    _xpath_selectors = {
+        "brand": "//a[@data-target='brand']/@href",
+        "pagination": "//div[contains(@class, 'Paginator_block')]"
+        "/a[@data-target-id='button-link-serp-paginator']/@href",
+        "car": "//article[@data-target='serp-snippet']//a[@data-target='serp-snippet-title']/@href",
     }
+    _xpath_data_selectors = (
+        {"field_name": "title", "xpath": "//div[@data-target='advert-title']/text()"},
+        {"field_name": "price", "xpath": "//div[@data-target='advert-price']/text()"},
+        {
+            "field_name": "photos",
+            "xpath": "//div[contains(@class,'PhotoGallery_block')]//figure/picture/img/@src",
+        },
+        {
+            "field_name": "characteristics",
+            "xpath": "//div[contains(@class, 'AdvertCard_specs')]"
+            "/div/div[contains(@class, 'AdvertSpecs_row')]",
+        },
+        {
+            "field_name": "description",
+            "xpath": "//div[@data-target='advert-info-descriptionFull']/text()",
+        },
+        {
+            "field_name": "author",
+            "xpath": '//body/script[contains(text(), "window.transitState = decodeURIComponent")]',
+            "re": r"youlaId%22%2C%22([a-zA-Z|\d]+)%22%2C%22avatar",
+        },
+    )
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.db_client = pymongo.MongoClient()
-
-    def _get_follow(self, response, selector, callback): #создается для того, чтобы выполнять похожую операцию в следующих двух ф-циях
-        for itm in response.css(selector):
-            url = itm.attrib["href"]
-            yield response.follow(url, callback=callback) #callback - ф-ция
+    def _get_follow(self, response, selector_str, callback):
+        for url in response.xpath(selector_str):
+            yield response.follow(url, callback=callback)
 
     def parse(self, response, *args, **kwargs):
         yield from self._get_follow(
-            response,
-            "div.TransportMainFilters_brandsList__2tIkv .ColumnItemList_column__5gjdt a.blackLink", #то, по чему выбираешь, селектор
-            self.brand_parse,
+            response, self._xpath_selectors["brand"], self.brand_parse,
         )
 
     def brand_parse(self, response):
         yield from self._get_follow(
-            response,
-            "div.Paginator_block__2XAPy a.Paginator_button__u1e7D", #обработка ссылок пагинаций
-            self.brand_parse,
+            response, self._xpath_selectors["pagination"], self.brand_parse
         )
-
         yield from self._get_follow(
-            response,
-            "article.SerpSnippet_snippet__3O1t2 a.SerpSnippet_name__3F7Yu", #ссылки на сами страницы объявлений
-            self.car_parse,
+            response, self._xpath_selectors["car"], self.car_parse,
         )
 
-    def car_parse(self, response): #работа уже с самими объявлениями
-        #print(1)
-        data = {}
-        for key, selector in self.data_query.items():
-            try:
-                data[key] = selector(response)
-            except (ValueError, AttributeError):
-                continue
-        self.db_client["parse"][self.name].insert_one(data)
-
-    @staticmethod
-    def authot_id(resp):
-        marker = "window.transitState = decodeURIComponent"
-        for script in resp.css("script"):
-            try:
-                if marker in script.css("::text").extract_first():
-                    re_pattern = re.compile(r"youlaId%22%C%22([a-zA-Z|\d]+)%22%2C%%22avatar")
-                    result = re.findall(re_pattern, script.css("::text").extract_first())
-                    return (
-                        resp.urljoin(f"/user/{result[0]}").replace("auto.", "", 1)
-                        if result
-                        else None
-                    )
-            except TypeError:
-                pass
+    def car_parse(self, response):
+        loader = AutoyoulaLoader(response=response)
+        loader.add_value("url", "")
+        loader.add_value("url", response.url)
+        loader.add_value("url", "hello")
+        for xpath_strict in self._xpath_data_selectors:
+            loader.add_xpath(**xpath_strict)
+        yield loader.load_item()
